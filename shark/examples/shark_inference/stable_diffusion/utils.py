@@ -1,7 +1,8 @@
 import os
+import tempfile
 import torch
 from shark.shark_inference import SharkInference
-from stable_args import args
+from shark.examples.shark_inference.stable_diffusion.stable_args import args
 from shark.shark_importer import import_with_fx
 from shark.iree_utils.vulkan_utils import (
     set_iree_vulkan_runtime_flags,
@@ -71,18 +72,29 @@ def compile_through_fx(
     is_f16=False,
     f16_input_mask=None,
     extra_args=[],
+    save_dir=tempfile.gettempdir(),
+    debug=False,
+    generate_vmfb=True,
 ):
-
-    mlir_module, func_name = import_with_fx(
-        model, inputs, is_f16, f16_input_mask
+    save_dir = os.path.join(args.local_tank_cache, model_name)
+    print("SAVE DIR: " + save_dir)
+    mlir_module, func_name, = import_with_fx(
+        model=model,
+        inputs=inputs,
+        is_f16=is_f16,
+        f16_input_mask=f16_input_mask,
+        debug=debug,
+        model_name=model_name,
+        save_dir=save_dir,
     )
-    shark_module = SharkInference(
-        mlir_module,
-        device=args.device,
-        mlir_dialect="linalg",
-    )
+    if generate_vmfb:
+        shark_module = SharkInference(
+            mlir_module,
+            device=args.device,
+            mlir_dialect="linalg",
+        )
 
-    return _compile_module(shark_module, model_name, extra_args)
+        return _compile_module(shark_module, model_name, extra_args)
 
 
 def set_iree_runtime_flags():
@@ -219,6 +231,7 @@ def set_init_device_flags():
         args.use_tuned = False
 
     # Use tuned model in the case of stablediffusion/fp16 and cuda device sm_80
+
     if (
         args.hf_model_id
         in [
@@ -229,8 +242,11 @@ def set_init_device_flags():
         and args.precision == "fp16"
         and "cuda" in args.device
         and get_cuda_sm_cc() in ["sm_80", "sm_89"]
+        and args.use_tuned  # required to avoid always forcing true on these cards
     ):
         args.use_tuned = True
+    else:
+        args.use_tuned = False
 
     if args.use_tuned:
         print(f"Using {args.device} tuned models for stablediffusion/fp16.")
